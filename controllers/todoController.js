@@ -1,4 +1,3 @@
-
 const Todo = require('../models/Todo');
 const User = require('../models/User');
 
@@ -15,15 +14,36 @@ const getTodos = async (req, res) => {
     const sortOptions = { [sortBy]: sortOrder };
 
     // Filter options
-    const filter = {};
-    if (req.query.userId) {
-      filter.userId = req.query.userId;
-    }
+    const filter = { userId: req.user._id };
     if (req.query.priority) {
       filter.priority = req.query.priority;
     }
     if (req.query.completed !== undefined) {
       filter.completed = req.query.completed === 'true';
+    }
+    if (req.query.tag) {
+      filter.tags = req.query.tag;
+    }
+    if (req.query.mention) {
+      // Find user by username and use their ID for filtering
+      const user = await User.findOne({ username: req.query.mention });
+      if (user) {
+        filter.mentions = user._id;
+      } else {
+        // If user not found, return empty result
+        return res.status(200).json({
+          success: true,
+          data: [],
+          pagination: {
+            currentPage: page,
+            totalPages: 0,
+            totalItems: 0,
+            itemsPerPage: limit,
+            hasNextPage: false,
+            hasPrevPage: false
+          }
+        });
+      }
     }
 
     // Search functionality
@@ -36,6 +56,8 @@ const getTodos = async (req, res) => {
 
     const todos = await Todo.find(filter)
       .populate('userId', 'name email')
+      .populate('mentions', 'name email')
+      .populate('notes.createdBy', 'name email')
       .sort(sortOptions)
       .skip(skip)
       .limit(limit);
@@ -67,7 +89,10 @@ const getTodos = async (req, res) => {
 // Get single todo
 const getTodo = async (req, res) => {
   try {
-    const todo = await Todo.findById(req.params.id).populate('userId', 'name email');
+    const todo = await Todo.findById(req.params.id)
+      .populate('userId', 'name email')
+      .populate('mentions', 'name email')
+      .populate('notes.createdBy', 'name email');
     
     if (!todo) {
       return res.status(404).json({
@@ -92,25 +117,27 @@ const getTodo = async (req, res) => {
 // Create new todo
 const createTodo = async (req, res) => {
   try {
-    const { title, description, priority, userId } = req.body;
+    const { title, description, priority, tags, mentions } = req.body;
 
-    // Verify user exists
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+    // Process mentions if any
+    let mentionIds = [];
+    if (mentions && mentions.length > 0) {
+      const users = await User.find({ username: { $in: mentions } });
+      mentionIds = users.map(user => user._id);
     }
 
     const todo = await Todo.create({
       title,
       description,
       priority,
-      userId
+      tags: tags || [],
+      mentions: mentionIds,
+      userId: req.user._id
     });
 
-    const populatedTodo = await Todo.findById(todo._id).populate('userId', 'name email');
+    const populatedTodo = await Todo.findById(todo._id)
+      .populate('userId', 'name email')
+      .populate('mentions', 'name email');
 
     res.status(201).json({
       success: true,
@@ -129,11 +156,23 @@ const createTodo = async (req, res) => {
 // Update todo
 const updateTodo = async (req, res) => {
   try {
+    const { mentions } = req.body;
+    let updateData = { ...req.body };
+
+    // Process mentions if provided
+    if (mentions && mentions.length > 0) {
+      const users = await User.find({ username: { $in: mentions } });
+      updateData.mentions = users.map(user => user._id);
+    }
+
     const todo = await Todo.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      updateData,
       { new: true, runValidators: true }
-    ).populate('userId', 'name email');
+    )
+    .populate('userId', 'name email')
+    .populate('mentions', 'name email')
+    .populate('notes.createdBy', 'name email');
 
     if (!todo) {
       return res.status(404).json({
@@ -151,6 +190,45 @@ const updateTodo = async (req, res) => {
     res.status(400).json({
       success: false,
       message: 'Error updating todo',
+      error: error.message
+    });
+  }
+};
+
+// Add note to todo
+const addNote = async (req, res) => {
+  try {
+    const { content } = req.body;
+    const todo = await Todo.findById(req.params.id);
+
+    if (!todo) {
+      return res.status(404).json({
+        success: false,
+        message: 'Todo not found'
+      });
+    }
+
+    todo.notes.push({
+      content,
+      createdBy: req.user._id
+    });
+
+    await todo.save();
+
+    const updatedTodo = await Todo.findById(todo._id)
+      .populate('userId', 'name email')
+      .populate('mentions', 'name email')
+      .populate('notes.createdBy', 'name email');
+
+    res.status(200).json({
+      success: true,
+      data: updatedTodo,
+      message: 'Note added successfully'
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: 'Error adding note',
       error: error.message
     });
   }
@@ -236,5 +314,6 @@ module.exports = {
   createTodo,
   updateTodo,
   deleteTodo,
-  getTodoStats
+  getTodoStats,
+  addNote
 };
