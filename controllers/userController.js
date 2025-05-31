@@ -1,4 +1,3 @@
-
 const User = require('../models/User');
 const Todo = require('../models/Todo');
 
@@ -192,12 +191,16 @@ const loginUser = async (req, res) => {
       });
     }
 
+    // Generate token
+    const token = user.generateToken();
+
     const userResponse = user.toObject();
     delete userResponse.password;
 
     res.status(200).json({
       success: true,
       data: userResponse,
+      token,
       message: 'Login successful'
     });
   } catch (error) {
